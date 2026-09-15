@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+
+  <title>
+    Scanner QR e-Ticket
+  </title>
+
+  <!--
+    Scanner ini sengaja di-host di domain HTTPS
+    di luar Google Apps Script.
+
+    Alasannya:
+    Google Apps Script HTML Service menggunakan
+    sandbox iframe sehingga akses kamera melalui
+    getUserMedia() dapat diblokir.
+  -->
+
+  <script
+    src="https://unpkg.com/html5-qrcode"
+    type="text/javascript">
+  </script>
+
+  <style>
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+      background: #f4f6f9;
+      color: #111827;
+    }
+
+    .header {
+      background: #111827;
+      color: white;
+      padding: 18px;
+      text-align: center;
+    }
+
+    .brand {
+      font-size: 20px;
+      font-weight: bold;
+    }
+
+    .subtitle {
+      margin-top: 5px;
+      font-size: 13px;
+      opacity: .7;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 520px;
+      margin: auto;
+      padding: 20px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 15px;
+      padding: 20px;
+      box-shadow:
+        0 5px 20px rgba(0,0,0,.07);
+    }
+
+    h2 {
+      margin-top: 0;
+      text-align: center;
+    }
+
+    .description {
+      text-align: center;
+      color: #6b7280;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    #qr-reader {
+      width: 100%;
+      max-width: 450px;
+      margin: 20px auto;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .status {
+      text-align: center;
+      padding: 13px;
+      border-radius: 9px;
+      background: #f3f4f6;
+      color: #374151;
+      font-size: 14px;
+      line-height: 1.5;
+      margin-top: 15px;
+    }
+
+    .status.success {
+      background: #ecfdf5;
+      color: #166534;
+    }
+
+    .status.error {
+      background: #fef2f2;
+      color: #991b1b;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 15px;
+    }
+
+    button {
+      flex: 1;
+      border: none;
+      border-radius: 9px;
+      padding: 12px;
+      font-size: 14px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .btn-primary {
+      background: #111827;
+      color: white;
+    }
+
+    .btn-danger {
+      background: #dc2626;
+      color: white;
+    }
+
+    button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    .result {
+      margin-top: 15px;
+      padding: 15px;
+      border-radius: 9px;
+      background: #ecfdf5;
+      color: #166534;
+      text-align: center;
+      word-break: break-all;
+      font-size: 14px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .footer {
+      text-align: center;
+      color: #9ca3af;
+      font-size: 12px;
+      padding: 20px;
+    }
+
+    @media(max-width: 600px) {
+
+      .container {
+        padding: 12px;
+      }
+
+      .card {
+        padding: 15px;
+      }
+
+      .button-row {
+        flex-direction: column;
+      }
+
+    }
+
+  </style>
+
+</head>
+
+<body>
+
+  <div class="header">
+
+    <div class="brand">
+      e-Ticket Kawak Digital Nusantara
+    </div>
+
+    <div class="subtitle">
+      Scanner QR Ticket
+    </div>
+
+  </div>
+
+
+  <div class="container">
+
+    <div class="card">
+
+      <h2>
+        📷 Scan QR Ticket
+      </h2>
+
+      <div class="description">
+        Arahkan kamera perangkat ke QR Code
+        pada e-ticket.
+      </div>
+
+
+      <div
+        id="qr-reader">
+      </div>
+
+
+      <div
+        id="scanner-status"
+        class="status">
+
+        Menyiapkan kamera...
+
+      </div>
+
+
+      <div
+        id="scan-result"
+        class="result hidden">
+      </div>
+
+
+      <div class="button-row">
+
+        <button
+          id="btn-start"
+          class="btn-primary"
+          onclick="startScanner()">
+
+          📷 Mulai Kamera
+
+        </button>
+
+
+        <button
+          id="btn-stop"
+          class="btn-danger"
+          onclick="stopScanner()"
+          disabled>
+
+          ■ Hentikan
+
+        </button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <div class="footer">
+    e-Ticket Kawak Digital Nusantara
+  </div>
+
+
+  <script>
+
+    // ==========================================================
+    // STATE
+    // ==========================================================
+
+    var qrScanner = null;
+
+    var scannerRunning = false;
+
+    var lastScannedCode = '';
+
+    var targetOrigin = '*';
+
+
+    // ==========================================================
+    // INIT
+    // ==========================================================
+
+    document.addEventListener(
+      'DOMContentLoaded',
+      function() {
+
+        /*
+         * Target origin dikirim oleh index.html
+         * ketika membuka scanner.
+         */
+        var params =
+          new URLSearchParams(
+            window.location.search
+          );
+
+        var requestedOrigin =
+          params.get(
+            'targetOrigin'
+          );
+
+        if (
+          requestedOrigin &&
+          /^https?:\/\//i.test(
+            requestedOrigin
+          )
+        ) {
+
+          targetOrigin =
+            requestedOrigin;
+        }
+
+        document.getElementById(
+          'scanner-status'
+        ).textContent =
+          'Tekan "Mulai Kamera" untuk mengaktifkan kamera.';
+
+      }
+    );
+
+
+    // ==========================================================
+    // START CAMERA
+    // ==========================================================
+
+    function startScanner() {
+
+      if (scannerRunning) {
+        return;
+      }
+
+      var status =
+        document.getElementById(
+          'scanner-status'
+        );
+
+      var startButton =
+        document.getElementById(
+          'btn-start'
+        );
+
+      var stopButton =
+        document.getElementById(
+          'btn-stop'
+        );
+
+      var resultBox =
+        document.getElementById(
+          'scan-result'
+        );
+
+
+      resultBox.classList.add(
+        'hidden'
+      );
+
+      lastScannedCode =
+        '';
+
+
+      if (
+        typeof Html5Qrcode ===
+        'undefined'
+      ) {
+
+        status.className =
+          'status error';
+
+        status.textContent =
+          'Library scanner gagal dimuat. ' +
+          'Periksa koneksi internet.';
+
+        return;
+      }
+
+
+      // Bersihkan instance lama.
+      if (qrScanner) {
+
+        try {
+          qrScanner.clear();
+        } catch (e) {}
+
+        qrScanner =
+          null;
+      }
+
+
+      status.className =
+        'status';
+
+      status.textContent =
+        'Meminta izin kamera...';
+
+
+      qrScanner =
+        new Html5Qrcode(
+          'qr-reader'
+        );
+
+
+      var config = {
+
+        fps: 10,
+
+        qrbox: {
+          width: 250,
+          height: 250
+        },
+
+        aspectRatio: 1.0
+
+      };
+
+
+      /*
+       * Ambil daftar kamera terlebih dahulu.
+       * Ini lebih kompatibel untuk HP maupun PC.
+       */
+      Html5Qrcode
+        .getCameras()
+
+        .then(
+          function(cameras) {
+
+            if (
+              !cameras ||
+              cameras.length === 0
+            ) {
+
+              throw new Error(
+                'Kamera tidak ditemukan.'
+              );
+            }
+
+
+            /*
+             * Default: kamera pertama.
+             */
+            var cameraId =
+              cameras[0].id;
+
+
+            /*
+             * Prioritas kamera belakang
+             * pada perangkat mobile.
+             */
+            for (
+              var i = 0;
+              i < cameras.length;
+              i++
+            ) {
+
+              var label =
+                String(
+                  cameras[i].label ||
+                  ''
+                ).toLowerCase();
+
+
+              if (
+                label.indexOf(
+                  'back'
+                ) !== -1 ||
+
+                label.indexOf(
+                  'rear'
+                ) !== -1 ||
+
+                label.indexOf(
+                  'environment'
+                ) !== -1
+              ) {
+
+                cameraId =
+                  cameras[i].id;
+
+                break;
+              }
+
+            }
+
+
+            status.className =
+              'status';
+
+            status.textContent =
+              'Kamera ditemukan. Membuka kamera...';
+
+
+            return qrScanner.start(
+
+              cameraId,
+
+              config,
+
+              function(decodedText) {
+
+                if (
+                  lastScannedCode ===
+                  decodedText
+                ) {
+                  return;
+                }
+
+
+                lastScannedCode =
+                  decodedText;
+
+
+                status.className =
+                  'status success';
+
+                status.textContent =
+                  'QR berhasil dibaca.';
+
+
+                resultBox.classList.remove(
+                  'hidden'
+                );
+
+                resultBox.innerHTML =
+                  '<strong>QR TERBACA</strong><br><br>' +
+                  escapeHtml(
+                    decodedText
+                  );
+
+
+                /*
+                 * Hentikan kamera setelah QR
+                 * berhasil dibaca.
+                 */
+                stopScanner();
+
+
+                /*
+                 * Kirim hasil QR ke halaman
+                 * utama Apps Script.
+                 */
+                sendResultToParent(
+                  decodedText
+                );
+
+              },
+
+              function() {
+
+                /*
+                 * Error pembacaan frame
+                 * diabaikan selama kamera aktif.
+                 */
+
+              }
+
+            );
+
+          }
+        )
+
+        .then(
+          function() {
+
+            scannerRunning =
+              true;
+
+            startButton.disabled =
+              true;
+
+            stopButton.disabled =
+              false;
+
+            status.className =
+              'status';
+
+            status.textContent =
+              'Kamera aktif. Arahkan ke QR Code tiket.';
+
+          }
+        )
+
+        .catch(
+          function(err) {
+
+            scannerRunning =
+              false;
+
+            try {
+              if (qrScanner) {
+                qrScanner.clear();
+              }
+            } catch (e) {}
+
+            qrScanner =
+              null;
+
+            startButton.disabled =
+              false;
+
+            stopButton.disabled =
+              true;
+
+
+            var message =
+              err &&
+              err.message
+                ? err.message
+                : String(err);
+
+
+            console.error(
+              'Scanner error:',
+              err
+            );
+
+
+            status.className =
+              'status error';
+
+            status.textContent =
+              'Kamera tidak dapat digunakan.';
+
+
+            alert(
+              'Tidak dapat membuka kamera.\\n\\n' +
+              message +
+              '\\n\\n' +
+              'Pastikan halaman scanner dibuka melalui HTTPS dan izin kamera sudah diberikan.'
+            );
+
+          }
+        );
+
+    }
+
+
+    // ==========================================================
+    // STOP CAMERA
+    // ==========================================================
+
+    function stopScanner() {
+
+      var startButton =
+        document.getElementById(
+          'btn-start'
+        );
+
+      var stopButton =
+        document.getElementById(
+          'btn-stop'
+        );
+
+
+      if (
+        qrScanner &&
+        scannerRunning
+      ) {
+
+        qrScanner
+          .stop()
+
+          .then(
+            function() {
+
+              scannerRunning =
+                false;
+
+              try {
+                qrScanner.clear();
+              } catch (e) {}
+
+              qrScanner =
+                null;
+
+              startButton.disabled =
+                false;
+
+              stopButton.disabled =
+                true;
+
+            }
+          )
+
+          .catch(
+            function() {
+
+              scannerRunning =
+                false;
+
+              try {
+                if (qrScanner) {
+                  qrScanner.clear();
+                }
+              } catch (e) {}
+
+              qrScanner =
+                null;
+
+              startButton.disabled =
+                false;
+
+              stopButton.disabled =
+                true;
+
+            }
+          );
+
+        return;
+      }
+
+
+      scannerRunning =
+        false;
+
+      try {
+        if (qrScanner) {
+          qrScanner.clear();
+        }
+      } catch (e) {}
+
+      qrScanner =
+        null;
+
+      startButton.disabled =
+        false;
+
+      stopButton.disabled =
+        true;
+
+    }
+
+
+    // ==========================================================
+    // SEND RESULT TO MAIN APP
+    // ==========================================================
+
+    function sendResultToParent(
+      qrToken
+    ) {
+
+      if (
+        !window.opener ||
+        window.opener.closed
+      ) {
+
+        document.getElementById(
+          'scanner-status'
+        ).textContent =
+          'QR terbaca, tetapi halaman utama tidak ditemukan.';
+
+        return;
+      }
+
+
+      try {
+
+        window.opener.postMessage(
+
+          {
+            type:
+              'ETICKET_QR_SCANNED',
+
+            qrToken:
+              qrToken
+          },
+
+          targetOrigin
+
+        );
+
+        /*
+         * Tutup window scanner setelah
+         * hasil berhasil dikirim.
+         *
+         * Browser mengizinkan script menutup
+         * window yang sebelumnya dibuka oleh
+         * window.open().
+         */
+        setTimeout(
+          function() {
+
+            try {
+              window.close();
+            } catch (e) {}
+
+          },
+          800
+        );
+
+      } catch (err) {
+
+        console.error(
+          'Gagal mengirim hasil QR:',
+          err
+        );
+
+        document.getElementById(
+          'scanner-status'
+        ).className =
+          'status error';
+
+        document.getElementById(
+          'scanner-status'
+        ).textContent =
+          'QR terbaca, tetapi gagal dikirim ke aplikasi utama.';
+
+      }
+
+    }
+
+
+    // ==========================================================
+    // ESCAPE HTML
+    // ==========================================================
+
+    function escapeHtml(
+      value
+    ) {
+
+      if (
+        value === null ||
+        value === undefined
+      ) {
+
+        return '';
+
+      }
+
+
+      return String(value)
+
+        .replace(
+          /&/g,
+          '&amp;'
+        )
+
+        .replace(
+          /</g,
+          '&lt;'
+        )
+
+        .replace(
+          />/g,
+          '&gt;'
+        )
+
+        .replace(
+          /"/g,
+          '&quot;'
+        )
+
+        .replace(
+          /'/g,
+          '&#039;'
+        );
+
+    }
+
+  </script>
+
+</body>
+</html>
